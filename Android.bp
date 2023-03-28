@@ -84,3 +84,10 @@ wifihal_qcom_defaults {
         },
     },
 }
+
+cc_defaults {
+    name: "lib_driver_cmd_qcwcn",
+    whole_static_libs: [
+        "//hardware/qcom/wlan/qcwcn:lib_driver_cmd_qcwcn",
+    ],
+}
