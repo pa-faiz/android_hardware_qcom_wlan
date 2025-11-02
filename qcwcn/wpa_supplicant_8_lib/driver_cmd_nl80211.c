@@ -72,6 +72,7 @@
 #include "driver_cmd_nl80211_extn.h"
 #include "driver_cmd_nl80211_common.h"
 #include "driver_cmd_nl80211_mlo.h"
+#include <inttypes.h>
 
 #define WPA_PS_ENABLED		0
 #define WPA_PS_DISABLED		1
@@ -185,6 +186,7 @@
 #define OPM_MODE_DISABLE         0
 #define OPM_MODE_ENABLE          1
 #define OPM_MODE_USER_DEFINED    2
+#define OPM_MODE_LATENCY_BASED   3
 
 #define HEXA_0X_STR             "0x"
 #define HEXA_0X_STR_LENGTH       2
@@ -2131,7 +2133,7 @@ static int wpa_driver_get_sta_info(struct i802_bss *bss, u8 *mac,
 		}
 	}
 
-	if(wpa_driver_ioctl(bss, "GETCOUNTRYREV", buf, sizeof(buf), &status, drv) == 0){
+	if(wpa_driver_ioctl(bss, "GETCOUNTRYREV", buf, sizeof(buf), status, drv) == 0){
 		p = strstr(buf, " ");
 		if(p != NULL)
 			memcpy(g_sta_info.country, (p+1), strlen(p+1)+1);//length of p including null
@@ -2935,7 +2937,7 @@ void print_setup_cmd_values(struct twt_setup_parameters *twt_setup_params)
 		   twt_setup_params->min_wake_duration);
 	wpa_printf(MSG_DEBUG, "TWT: max wake duration: %d ",
 		   twt_setup_params->max_wake_duration);
-	wpa_printf(MSG_DEBUG, "TWT: wake tsf: 0x%llx ",
+	wpa_printf(MSG_DEBUG, "TWT: wake tsf: 0x%"PRIx64,
 		   twt_setup_params->wake_tsf);
 	wpa_printf(MSG_DEBUG, "TWT: announce timeout(in us): %u",
 		   twt_setup_params->announce_timeout_us);
@@ -4376,7 +4378,8 @@ static int wpa_get_twt_setup_resp_val(struct nlattr **tb2, char *buf,
  *
  * @Returns 0 on Success, -1 on Failure
  */
-static int unpack_twt_get_params_nlmsg(struct nl_msg **tb, char *buf, int buf_len)
+static int
+unpack_twt_get_params_nlmsg(struct nlattr **tb, char *buf, int buf_len)
 {
 	int ret, rem, id, len = 0, num_twt_sessions = 0;
 	struct nlattr *config_attr[QCA_WLAN_VENDOR_ATTR_CONFIG_TWT_MAX + 1];
@@ -4589,8 +4592,8 @@ static int wpa_get_twt_stats_resp_val(struct nlattr **tb2, char *buf,
  *
  * @Returns 0 on Success, -1 on Failure
  */
-static
-int unpack_twt_get_stats_nlmsg(struct nl_msg **tb, char *buf, int buf_len)
+static int
+unpack_twt_get_stats_nlmsg(struct nlattr **tb, char *buf, int buf_len)
 {
 	int ret, rem, id, len = 0, num_twt_sessions = 0;
 	struct nlattr *config_attr[QCA_WLAN_VENDOR_ATTR_CONFIG_TWT_MAX + 1];
@@ -4679,7 +4682,8 @@ static int wpa_get_twt_capabilities_resp_val(struct nlattr **tb2, char *buf,
  *
  * @Returns 0 on Success, -1 on Failure
  */
-static int unpack_twt_get_capab_nlmsg(struct nl_msg **tb, char *buf, int buf_len)
+static int
+unpack_twt_get_capab_nlmsg(struct nlattr **tb, char *buf, int buf_len)
 {
 	int ret, id;
 	struct nlattr *config_attr[QCA_WLAN_VENDOR_ATTR_CONFIG_TWT_MAX + 1];
@@ -5729,8 +5733,7 @@ int wpa_driver_cmd_send_peer_flush_queue_config(struct i802_bss *bss, char *cmd)
 static int wpa_driver_check_for_tsf_cmd(char *cmd, enum qca_tsf_cmd *tsf_cmd, u32 *interval)
 {
 	int ret;
-	if (os_strlen(cmd) == 7 &&
-	    os_strncasecmp(cmd, "TSF_GET", 7) == 0) {
+	if (os_strncasecmp(cmd, "TSF_GET", 7) == 0) {
 		*tsf_cmd = QCA_TSF_GET;
 		cmd += 7;
 	} else if (os_strncasecmp(cmd, "TSF_SYNC_START", 14) == 0) {
@@ -5747,10 +5750,15 @@ static int wpa_driver_check_for_tsf_cmd(char *cmd, enum qca_tsf_cmd *tsf_cmd, u3
 				return -EINVAL;
 			}
 		}
-	} else if (os_strlen(cmd) == 13 &&
-		   os_strncasecmp(cmd, "TSF_SYNC_STOP", 13) == 0) {
+	} else if (os_strncasecmp(cmd, "TSF_SYNC_STOP", 13) == 0) {
 		*tsf_cmd = QCA_TSF_SYNC_STOP;
 		cmd += 13;
+	} else if (os_strncasecmp(cmd, "TSF_CAPTURE", 11) == 0) {
+		*tsf_cmd = QCA_TSF_CAPTURE;
+		cmd += 11;
+	} else if (os_strncasecmp(cmd, "TSF_SYNC_GET", 12) == 0) {
+		*tsf_cmd = QCA_TSF_SYNC_GET;
+		cmd += 12;
 	} else
 		return -EINVAL;
 
@@ -5787,7 +5795,8 @@ static int wpa_driver_tsf_cmd_resp_handler(struct resp_info *info,
 		return NL_SKIP;
 	}
 	ret = os_snprintf(info->reply_buf, info->reply_buf_len,
-			  "tsf_value:%llu host_time:%llu", tsf_value, host_time);
+			  "tsf_value:%"PRIu64" host_time:%"PRIu64,
+			  tsf_value, host_time);
 	if (os_snprintf_error(info->reply_buf_len, ret)) {
 		wpa_printf(MSG_ERROR, "%s:Fail to print buffer", __func__);
 		return -ENOMEM;
@@ -5848,7 +5857,7 @@ static int wpa_driver_tsf_cmd(struct i802_bss *bss, char *cmd, char *buf, size_t
 		}
 	}
 	nla_nest_end(tsf_nlmsg, tsf_attr);
-	if (tsf_cmd == QCA_TSF_GET)
+	if ((tsf_cmd == QCA_TSF_GET) || (tsf_cmd == QCA_TSF_SYNC_GET))
 		ret = send_nlmsg((struct nl_sock *)drv->global->nl, tsf_nlmsg,
 				 response_handler, &info);
 	else
@@ -6660,6 +6669,8 @@ static uint8_t wpa_driver_convert_opm_mode(uint8_t opm_mode)
 		return QCA_WLAN_VENDOR_OPM_MODE_ENABLE;
 	case 2:
 		return QCA_WLAN_VENDOR_OPM_MODE_USER_DEFINED;
+	case 3:
+		return QCA_WLAN_VENDOR_OPM_MODE_LATENCY_BASED;
 	default:
 		return opm_mode;
 	}
@@ -6670,8 +6681,8 @@ static int wpa_driver_ps_config_cmd(struct i802_bss *bss, char *cmd)
 	struct wpa_driver_nl80211_data *drv;
 	struct nl_msg *nlmsg;
 	struct nlattr *attr;
-	u8 opm_mode;
-	u16 ps_ito, spec_wake;
+	u8 opm_mode, ps_opm_level;
+	u16 ps_ito, spec_wake, latency_tolerance;
 	int ret;
 
 	drv = bss->drv;
@@ -6683,6 +6694,11 @@ static int wpa_driver_ps_config_cmd(struct i802_bss *bss, char *cmd)
 	opm_mode = get_u8_from_string(cmd, &ret);
 	if (ret < 0) {
 		wpa_printf(MSG_ERROR, "ps_config: Invalid opm_mode");
+		return -EINVAL;
+	}
+	if (opm_mode > 3) {
+		wpa_printf(MSG_ERROR,
+			   "opm_mode must be within the range of 0 to 3");
 		return -EINVAL;
 	}
 
@@ -6706,6 +6722,40 @@ static int wpa_driver_ps_config_cmd(struct i802_bss *bss, char *cmd)
 		spec_wake = get_u16_from_string(cmd, &ret);
 		if (ret < 0) {
 			wpa_printf(MSG_ERROR, "Invalid spec_wake value");
+			return -EINVAL;
+		}
+	}
+
+	if (opm_mode == OPM_MODE_LATENCY_BASED) {
+		cmd = move_to_next_str(cmd);
+		if (*cmd == '\0') {
+			wpa_printf(MSG_ERROR, "ps_opm_level is missing in cmd");
+			return -EINVAL;
+		}
+		ps_opm_level = get_u8_from_string(cmd, &ret);
+		if (ret < 0) {
+			wpa_printf(MSG_ERROR, "Invalid ps_opm_level value");
+			return -EINVAL;
+		}
+		if ((ps_opm_level == 0) || (ps_opm_level > 5)) {
+			wpa_printf(MSG_ERROR,
+				   "Values of ps_opm_level above 5 & 0 are not supported");
+			return -EINVAL;
+		}
+		cmd = move_to_next_str(cmd);
+		if (*cmd == '\0') {
+			wpa_printf(MSG_ERROR,
+				   "latency_tolerance is missing in cmd");
+			return -EINVAL;
+		}
+		latency_tolerance = get_u16_from_string(cmd, &ret);
+		if (ret < 0) {
+			wpa_printf(MSG_ERROR, "Invalid latency_tolerance value");
+			return -EINVAL;
+		}
+		if ((latency_tolerance > 200) || (latency_tolerance < 30)) {
+			wpa_printf(MSG_ERROR,
+				   "latency_tolerance must be within the range of 30 to 200");
 			return -EINVAL;
 		}
 	}
@@ -6744,6 +6794,22 @@ static int wpa_driver_ps_config_cmd(struct i802_bss *bss, char *cmd)
 				spec_wake)) {
 			ret = -ENOMEM;
 			wpa_printf(MSG_ERROR, "Failed to put spec_wake value");
+			goto nlmsg_fail;
+		}
+	}
+
+	if (opm_mode == OPM_MODE_LATENCY_BASED) {
+		if (nla_put_u8(nlmsg, QCA_WLAN_VENDOR_ATTR_CONFIG_OPM_LEVEL,
+				ps_opm_level)) {
+			ret = -ENOMEM;
+			wpa_printf(MSG_ERROR, "Failed to put ps_opm level value");
+			goto nlmsg_fail;
+		}
+		if (nla_put_u16(nlmsg,
+				QCA_WLAN_VENDOR_ATTR_CONFIG_OPM_LATENCY_TOLERANCE,
+				latency_tolerance)) {
+			ret = -ENOMEM;
+			wpa_printf(MSG_ERROR, "Failed to put latency tolerance value");
 			goto nlmsg_fail;
 		}
 	}
@@ -7168,13 +7234,16 @@ int wpa_driver_nl80211_driver_cmd(void *priv, char *cmd, char *buf,
 		cmd += 17;
 		return wpa_driver_set_ul_mu_cfg(bss, cmd);
 	} else if (os_strncasecmp(cmd, "SET_PS_CONFIG ", 14) == 0) {
-		/* DRIVER SET_PS_CONFIG <opm_mode> <ps_ito> <spec_wake>
+		/* DRIVER SET_PS_CONFIG <opm_mode> <val1> <val2>
 		 * opm_mode  - Optimized power management Mode
-		 *     value 0 - Disable OPM
-		 *     value 1 - Enable OPM
-		 *     value 2 - User defined OPM
-		 * ps_ito    - Power save inactivity timeout
-		 * spec_wake - Speculative wake interval
+		 *   value 0 - Disable OPM (no power management)
+		 *   value 1 - Enable OPM (default power management)
+		 *   value 2 - User defined OPM
+		 *      val1 - Power save inactivity timeout (in ms)
+		 *      val2 - Speculative wake interval (in ms)
+		 *   value 3 - Latency based OPM
+		 *      val1 - Aggressiveness level (1-5, where 1 is most aggressive)
+		 *      val2 - Latency tolerance (30-200 ms)
 		 */
 		cmd += 14;
 		return wpa_driver_ps_config_cmd(bss, cmd);
